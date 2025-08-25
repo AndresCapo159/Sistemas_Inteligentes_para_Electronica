@@ -1,0 +1,78 @@
+Calcular IQR y detectar Outliers
+
+// Código Arduino para calcular IQR y detectar outliers
+
+// === CONFIGURACIÓN DE DATOS ===
+const int N = 100;  // Puedes cambiar el número de datos
+int datos[N] = {37, 52, 56, 47, 52, 43, 36, 49, 50, 56, 60, 44, 51, 47, 48, 
+53, 55, 61, 52, 64, 45, 55, 46, 52, 59, 51, 44, 49, 54, 48, 56, 57, 54, 42, 
+58, 41, 43, 55, 54, 59, 45, 64, 51, 53, 56, 57, 58, 62, 48, 52, 47, 46, 50, 
+59, 56, 63, 54, 40, 58, 52, 61, 53, 55, 57, 49, 60, 50, 56, 44, 47, 54, 58, 
+62, 43, 52, 46, 51, 56, 57, 59, 48, 54, 55, 60, 61, 63, 65, 67, 68, 70, 72, 
+73, 75, -100, -50, 200, 180, 100, 120, 130};
+
+// === FUNCIONES AUXILIARES ===
+
+// Ordenar el arreglo (Método burbuja, simple pero suficiente)
+void ordenar(int arr[], int n) {
+  for (int i = 0; i < n-1; i++) {
+    for (int j = 0; j < n-i-1; j++) {
+      if (arr[j] > arr[j+1]) {
+        int temp = arr[j];
+        arr[j] = arr[j+1];
+        arr[j+1] = temp;
+      }
+    }
+  }
+}
+
+// Percentil con interpolación lineal (imitando NumPy)
+float percentil(int arr[], int n, float p) {
+  if (n == 0) return 0;
+  if (n == 1) return arr[0];
+
+  float pos = (p / 100.0) * (n - 1);  // Posición exacta
+  int idx_bajo = (int)pos;            // Índice inferior
+  int idx_alto = idx_bajo + 1;        // Índice superior
+  float d = pos - idx_bajo;           // Fracción para interpolar
+
+  if (idx_alto >= n) return arr[idx_bajo];
+  return arr[idx_bajo] + d * (arr[idx_alto] - arr[idx_bajo]);
+}
+
+// === PROGRAMA PRINCIPAL ===
+void setup() {
+  Serial.begin(9600);
+
+  // Ordenar datos antes de calcular percentiles
+  ordenar(datos, N);
+
+  // Calcular cuartiles e IQR
+  float Q1 = percentil(datos, N, 25);
+  float Q3 = percentil(datos, N, 75);
+  float IQR = Q3 - Q1;
+
+  // Calcular límites
+  float limiteInferior = Q1 - 1.5 * IQR;
+  float limiteSuperior = Q3 + 1.5 * IQR;
+
+  // Imprimir resultados
+  Serial.println("=== Resultados IQR ===");
+  Serial.print("Q1: "); Serial.println(Q1);
+  Serial.print("Q3: "); Serial.println(Q3);
+  Serial.print("IQR: "); Serial.println(IQR);
+  Serial.print("Límite inferior: "); Serial.println(limiteInferior);
+  Serial.print("Límite superior: "); Serial.println(limiteSuperior);
+
+  // Detectar y mostrar outliers
+  Serial.println("Valores atipicos:");
+  for (int i = 0; i < N; i++) {
+    if (datos[i] < limiteInferior || datos[i] > limiteSuperior) {
+      Serial.println(datos[i]);
+    }
+  }
+}
+
+void loop() {
+  // No se necesita, se ejecuta una sola vez
+}
