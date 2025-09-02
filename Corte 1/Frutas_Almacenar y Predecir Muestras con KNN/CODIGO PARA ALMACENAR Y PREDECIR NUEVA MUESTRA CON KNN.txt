@@ -1,0 +1,230 @@
+//CODIGO PARA ALMACENAR Y PREDECIR NUEVA MUESTRA CON KNN
+
+#include <Wire.h>
+#include "Adafruit_TCS34725.h"
+#include <SPI.h>
+#include <SD.h>
+
+#define SD_CS 10
+#define MUESTRAS 20
+#define MAX_MUESTRAS 60
+#define K 3
+#define REP 7
+
+Adafruit_TCS34725 tcs(TCS34725_INTEGRATIONTIME_50MS, TCS34725_GAIN_4X);
+File dataFile;
+bool datasetExiste = false;
+
+// ======================
+// Estructura de dataset
+// ======================
+struct Muestra { uint8_t clase; uint16_t r, g, b; };
+Muestra dataset[MAX_MUESTRAS];
+int totalMuestras = 0;
+
+// ======================
+// Filtros de datos
+// ======================
+uint16_t getMedian(uint16_t *arr, uint8_t n){
+  for(uint8_t i=0;i<n-1;i++) for(uint8_t j=i+1;j<n;j++) if(arr[j]<arr[i]) { uint16_t tmp=arr[i]; arr[i]=arr[j]; arr[j]=tmp; }
+  return arr[n/2];
+}
+float movingAverage(uint16_t *arr, uint8_t n){ long suma=0; for(uint8_t i=0;i<n;i++) suma+=arr[i]; return (float)suma/n; }
+float emaFilter(uint16_t *arr, uint8_t n, float alpha=0.3){ float ema=arr[0]; for(uint8_t i=1;i<n;i++) ema=alpha*arr[i]+(1-alpha)*ema; return ema; }
+float applyIQR(uint16_t *arr, uint8_t n){
+  getMedian(arr,n);
+  int q1=arr[n/4], q3=arr[(3*n)/4], iqr=q3-q1;
+  int lower=q1-1.5*iqr, upper=q3+1.5*iqr;
+  long suma=0; int count=0;
+  for(uint8_t i=0;i<n;i++) if(arr[i]>=lower && arr[i]<=upper){ suma+=arr[i]; count++; }
+  return (count>0)?(float)suma/count:arr[n/2];
+}
+void readColorFiltered(float &r,float &g,float &b,uint8_t rep=REP){
+  uint16_t rr[REP], gg[REP], bb[REP], c;
+  for(uint8_t i=0;i<rep;i++){ tcs.getRawData(&rr[i], &gg[i], &bb[i], &c); delay(40); }
+  r=applyIQR(rr,rep); g=movingAverage(gg,rep); b=emaFilter(bb,rep,0.4);
+}
+
+// ======================
+// Funciones SD
+// ======================
+void borrarDatosSD(){
+  if(SD.exists("colores.csv")) SD.remove("colores.csv");
+  dataFile=SD.open("colores.csv", FILE_WRITE);
+  if(dataFile){ dataFile.println(F("Clase,Muestra,R,G,B,Estado")); dataFile.close(); }
+  datasetExiste=false;
+  Serial.println(F("Archivo reiniciado. Ahora puede registrar nuevas muestras o usar predicción."));
+}
+
+void verDatosSD(){
+  if(!SD.exists("colores.csv")){ Serial.println(F("No existe archivo en la SD.")); return; }
+  dataFile=SD.open("colores.csv");
+  if(!dataFile){ Serial.println(F("No se pudo abrir el archivo.")); return; }
+  Serial.println(F("\n=== Contenido de colores.csv ==="));
+  Serial.println(F("Clase | Muestra | R | G | B | Estado"));
+  Serial.println(F("---------------------------------------"));
+  char linea[64]; bool primera=true;
+  while(dataFile.available()){
+    int len=dataFile.readBytesUntil('\n', linea, sizeof(linea)-1); linea[len]='\0';
+    if(len==0) continue;
+    if(primera && strncmp(linea,"Clase",5)==0){ primera=false; continue; }
+    char *token=strtok(linea,","); Serial.print(token); Serial.print(F(" | "));
+    token=strtok(NULL,","); Serial.print(token); Serial.print(F(" | "));
+    token=strtok(NULL,","); Serial.print(token); Serial.print(F(" | "));
+    token=strtok(NULL,","); Serial.print(token); Serial.print(F(" | "));
+    token=strtok(NULL,","); Serial.print(token); Serial.print(F(" | "));
+    token=strtok(NULL,","); Serial.println(token);
+  }
+  dataFile.close();
+  Serial.println(F("---------------------------------------"));
+  Serial.println(F("=== Fin del archivo ==="));
+}
+
+// ======================
+// Funciones KNN
+// ======================
+uint32_t distanciaEuclidiana(uint16_t r1,uint16_t g1,uint16_t b1,uint16_t r2,uint16_t g2,uint16_t b2){
+  long dr=(long)r1-r2, dg=(long)g1-g2, db=(long)b1-b2; return dr*dr+dg*dg+db*db;
+}
+int knnClasificar(uint16_t r,uint16_t g,uint16_t b){
+  if(totalMuestras==0){ Serial.println(F("No hay dataset cargado.")); return -1; }
+  uint32_t mejoresDist[K]; uint8_t mejoresClases[K];
+  for(int i=0;i<K;i++){ mejoresDist[i]=0xFFFFFFFF; mejoresClases[i]=0xFF; }
+  for(int i=0;i<totalMuestras;i++){
+    uint32_t d=distanciaEuclidiana(r,g,b,dataset[i].r,dataset[i].g,dataset[i].b);
+    for(int j=0;j<K;j++){
+      if(d<mejoresDist[j]){
+        for(int k=K-1;k>j;k--){ mejoresDist[k]=mejoresDist[k-1]; mejoresClases[k]=mejoresClases[k-1]; }
+        mejoresDist[j]=d; mejoresClases[j]=dataset[i].clase; break;
+      }
+    }
+  }
+  uint8_t votos[10]={0};
+  for(int i=0;i<K;i++) if(mejoresClases[i]!=0xFF) votos[mejoresClases[i]]++;
+  int clasePred=-1, maxVotos=-1;
+  for(int c=0;c<10;c++) if(votos[c]>maxVotos){ maxVotos=votos[c]; clasePred=c; }
+  return clasePred;
+}
+void cargarDataset(){
+  if(!SD.exists("colores.csv")){ Serial.println(F("No existe archivo colores.csv en la SD.")); return; }
+  dataFile=SD.open("colores.csv");
+  if(!dataFile){ Serial.println(F("Error al abrir colores.csv")); return; }
+  totalMuestras=0; char buffer[64]; bool primera=true;
+  while(dataFile.available() && totalMuestras<MAX_MUESTRAS){
+    int len=dataFile.readBytesUntil('\n', buffer, sizeof(buffer)-1); buffer[len]='\0';
+    if(len==0) continue;
+    if(primera && strncmp(buffer,"Clase",5)==0){ primera=false; continue; }
+    char *token=strtok(buffer,","); dataset[totalMuestras].clase=atoi(token);
+    token=strtok(NULL,","); token=strtok(NULL,","); dataset[totalMuestras].r=atoi(token);
+    token=strtok(NULL,","); dataset[totalMuestras].g=atoi(token);
+    token=strtok(NULL,","); dataset[totalMuestras].b=atoi(token);
+    totalMuestras++;
+  }
+  dataFile.close();
+  Serial.print(F("Dataset cargado con ")); Serial.print(totalMuestras); Serial.println(F(" muestras."));
+}
+
+void leerColor(uint16_t &r,uint16_t &g,uint16_t &b){ uint16_t c; tcs.getRawData(&r,&g,&b,&c); }
+
+void mostrarMenu(){
+  Serial.println(F("\n=== Menú de comandos ==="));
+  Serial.println(F(" 'borrar datos' -> reinicia el dataset en SD"));
+  Serial.println(F(" 'ver datos'    -> muestra contenido del dataset"));
+  Serial.println(F(" 'ok'           -> iniciar registro automático de muestras"));
+  Serial.println(F(" 'predecir'     -> tomar nueva muestra y predecir clase"));
+  Serial.println(F(" 'cargar'       -> recargar dataset desde SD"));
+  Serial.println(F(" 'menu'         -> mostrar este menú nuevamente"));
+}
+
+// ======================
+// Setup y loop
+// ======================
+void setup(){
+  Serial.begin(9600);
+  if(!tcs.begin()){ Serial.println(F("No se encontró el TCS34725.")); while(1); }
+  if(!SD.begin(SD_CS)){ Serial.println(F("No se pudo inicializar la SD.")); while(1); }
+  if(SD.exists("colores.csv")) datasetExiste=true;
+  Serial.println(F("\n=== Sistema listo ==="));
+  mostrarMenu();
+}
+
+void loop(){
+  if(Serial.available()){
+    char cmd[16]; 
+    int len = Serial.readBytesUntil('\n', cmd, sizeof(cmd)-1); 
+    cmd[len] = '\0';
+
+    if(strcasecmp(cmd,"borrar datos")==0){
+      borrarDatosSD();
+      Serial.println(F("¿Desea iniciar registro de nuevas muestras? Escriba 'ok' para iniciar."));
+    }
+    else if(strcasecmp(cmd,"ver datos")==0){
+      verDatosSD();
+    }
+    else if(strcasecmp(cmd,"predecir")==0){
+      cargarDataset();
+      if(totalMuestras == 0){ 
+        Serial.println(F("No hay muestras para predecir. Registre el dataset primero.")); 
+        return; 
+      }
+      uint16_t r,g,b; 
+      leerColor(r,g,b); 
+      int clase = knnClasificar(r,g,b);
+      Serial.print(F("Color -> R=")); Serial.print(r); 
+      Serial.print(F(" G=")); Serial.print(g); 
+      Serial.print(F(" B=")); Serial.println(b);
+      if(clase != -1){
+        Serial.print(F("Clase predicha: ")); 
+        Serial.println(clase);
+      }
+    }
+    else if(strcasecmp(cmd,"cargar")==0){
+      cargarDataset();
+    }
+    else if(strcasecmp(cmd,"menu")==0){
+      mostrarMenu();
+    }
+    else if(strcasecmp(cmd,"ok")==0){
+      // Registro automático de muestras
+      for(uint8_t clase=1; clase<=3; clase++){
+        Serial.print(F("\n=== Clase ")); Serial.print(clase); Serial.println(F(" ==="));
+        Serial.println(F("Escriba 'ok' para iniciar la toma de muestras de esta clase."));
+        bool iniciar=false;
+        while(!iniciar){
+          if(Serial.available()){
+            char c[16]; int l=Serial.readBytesUntil('\n', c, sizeof(c)-1); c[l]='\0';
+            if(strcasecmp(c,"ok")==0) iniciar=true;
+            else if(strcasecmp(c,"borrar datos")==0){ borrarDatosSD(); return; }
+            else if(strcasecmp(c,"ver datos")==0){ verDatosSD(); }
+          }
+        }
+
+        for(uint8_t i=0; i<MUESTRAS; i++){
+          float r,g,b; 
+          readColorFiltered(r,g,b);
+          dataFile = SD.open("colores.csv", FILE_WRITE);
+          if(dataFile){
+            dataFile.print(clase); dataFile.print(",");
+            dataFile.print(i+1); dataFile.print(",");
+            dataFile.print(r,2); dataFile.print(",");
+            dataFile.print(g,2); dataFile.print(",");
+            dataFile.print(b,2); dataFile.println(",Filtrada");
+            dataFile.close();
+          }
+          Serial.print(F("Muestra ")); Serial.print(i+1); 
+          Serial.print(F(": R=")); Serial.print(r); 
+          Serial.print(F(" G=")); Serial.print(g); 
+          Serial.print(F(" B=")); Serial.println(b); 
+          delay(200);
+        }
+        Serial.println(F("Clase completada."));
+      }
+      Serial.println(F("=== Registro de dataset finalizado ===")); 
+      datasetExiste = true;
+      mostrarMenu();
+    }
+    else{
+      Serial.println(F("Comando no reconocido. Escriba 'menu' para ver los comandos."));
+    }
+  }
+}

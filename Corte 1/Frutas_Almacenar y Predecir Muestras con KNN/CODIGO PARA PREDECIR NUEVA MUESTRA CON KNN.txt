@@ -1,0 +1,251 @@
+//CODIGO PARA PREDECIR NUEVA MUESTRA CON KNN
+
+#include <Wire.h>
+#include "Adafruit_TCS34725.h"
+#include <SPI.h>
+#include <SD.h>
+
+#define SD_CS 10
+#define MAX_MUESTRAS 60  // máximo de muestras que se cargarán en memoria
+#define K 5               // valor de K para KNN
+
+Adafruit_TCS34725 tcs = Adafruit_TCS34725(
+  TCS34725_INTEGRATIONTIME_50MS, TCS34725_GAIN_4X
+);//2.4 ms,24 ms, 50 ms,101 ms, 154 ms, 600 ms,, 1X, 4X, 16X, 60X
+
+File dataFile;
+
+// ======================
+// Estructura optimizada
+// ======================
+struct Muestra {
+  uint8_t clase;
+  uint16_t r, g, b;
+};
+Muestra dataset[MAX_MUESTRAS];
+int totalMuestras = 0;
+
+// ======================
+// Calcular distancia (sin sqrt para optimizar RAM)
+// ======================
+uint32_t distanciaEuclidiana(uint16_t r1, uint16_t g1, uint16_t b1,
+                             uint16_t r2, uint16_t g2, uint16_t b2) {
+  long dr = (long)r1 - r2;
+  long dg = (long)g1 - g2;
+  long db = (long)b1 - b2;
+  return dr*dr + dg*dg + db*db;
+}
+
+// ======================
+// Función KNN optimizada
+// ======================
+int knnClasificar(uint16_t r, uint16_t g, uint16_t b) {
+  if (totalMuestras == 0) {
+    Serial.println(F("No hay dataset cargado."));
+    return -1;
+  }
+
+  uint32_t mejoresDist[K];
+  uint8_t mejoresClases[K];
+  for (int i = 0; i < K; i++) {
+    mejoresDist[i] = 0xFFFFFFFF;
+    mejoresClases[i] = 0xFF;
+  }
+
+  for (int i = 0; i < totalMuestras; i++) {
+    uint32_t d = distanciaEuclidiana(r, g, b, dataset[i].r, dataset[i].g, dataset[i].b);
+    for (int j = 0; j < K; j++) {
+      if (d < mejoresDist[j]) {
+        for (int k = K - 1; k > j; k--) {
+          mejoresDist[k] = mejoresDist[k-1];
+          mejoresClases[k] = mejoresClases[k-1];
+        }
+        mejoresDist[j] = d;
+        mejoresClases[j] = dataset[i].clase;
+        break;
+      }
+    }
+  }
+
+  uint8_t votos[10] = {0};
+  for (int i = 0; i < K; i++) if (mejoresClases[i] != 0xFF) votos[mejoresClases[i]]++;
+
+  int clasePred = -1, maxVotos = -1;
+  for (int c = 0; c < 10; c++) {
+    if (votos[c] > maxVotos) {
+      maxVotos = votos[c];
+      clasePred = c;
+    }
+  }
+
+  return clasePred;
+}
+
+// ======================
+// Cargar dataset desde SD usando char[]
+// ======================
+void cargarDataset() {
+  if (!SD.exists("colores.csv")) {
+    Serial.println(F("No existe archivo colores.csv en la SD."));
+    return;
+  }
+
+  dataFile = SD.open("colores.csv");
+  if (!dataFile) {
+    Serial.println(F("Error al abrir colores.csv"));
+    return;
+  }
+
+  totalMuestras = 0;
+  char buffer[64];
+  bool primera = true;
+
+  while (dataFile.available() && totalMuestras < MAX_MUESTRAS) {
+    int len = dataFile.readBytesUntil('\n', buffer, sizeof(buffer)-1);
+    buffer[len] = '\0';
+    if (len == 0) continue;
+    if (primera && strncmp(buffer, "Clase", 5) == 0) {
+      primera = false;
+      continue;
+    }
+
+    char* token = strtok(buffer, ","); // Clase
+    dataset[totalMuestras].clase = atoi(token);
+    token = strtok(NULL, ",");         // Muestra (ignoramos)
+    token = strtok(NULL, ","); dataset[totalMuestras].r = atoi(token);
+    token = strtok(NULL, ","); dataset[totalMuestras].g = atoi(token);
+    token = strtok(NULL, ","); dataset[totalMuestras].b = atoi(token);
+
+    totalMuestras++;
+  }
+  dataFile.close();
+  Serial.print(F("Dataset cargado con "));
+  Serial.print(totalMuestras);
+  Serial.println(F(" muestras."));
+}
+
+// ======================
+// Leer color
+// ======================
+void leerColor(uint16_t &r, uint16_t &g, uint16_t &b) {
+  uint16_t c;
+  tcs.getRawData(&r, &g, &b, &c);
+}
+
+// ======================
+// Ver contenido de la SD
+// ======================
+void verDatosSD() {
+  if (SD.exists("colores.csv")) {
+    dataFile = SD.open("colores.csv");
+    if (dataFile) {
+      Serial.println(F("\n=== Contenido de colores.csv ==="));
+      Serial.println(F("Clase | Muestra | R | G | B | Estado"));
+      Serial.println(F("--------------------------------------------------------"));
+      String linea;
+      bool primera = true;
+      while (dataFile.available()) {
+        linea = dataFile.readStringUntil('\n');
+        linea.trim();
+        if (linea.length() == 0) continue;
+        if (primera && linea.startsWith("Clase")) { primera = false; continue; }
+
+        int idx1 = linea.indexOf(',');
+        int idx2 = linea.indexOf(',', idx1 + 1);
+        int idx3 = linea.indexOf(',', idx2 + 1);
+        int idx4 = linea.indexOf(',', idx3 + 1);
+        int idx5 = linea.indexOf(',', idx4 + 1);
+
+        int claseNum = linea.substring(0, idx1).toInt();
+        String claseNombre;
+        if (claseNum == 1) claseNombre = "Manzana roja";
+        else if (claseNum == 2) claseNombre = "Limon verde";
+        else if (claseNum == 3) claseNombre = "Naranja";
+        else claseNombre = String(claseNum);
+
+        String muestra = linea.substring(idx1 + 1, idx2);
+        String r = linea.substring(idx2 + 1, idx3);
+        String g = linea.substring(idx3 + 1, idx4);
+        String b = linea.substring(idx4 + 1, idx5);
+        String estado = linea.substring(idx5 + 1);
+
+        Serial.print(claseNombre); Serial.print(F(" | "));
+        Serial.print(muestra); Serial.print(F(" | "));
+        Serial.print(r); Serial.print(F(" | "));
+        Serial.print(g); Serial.print(F(" | "));
+        Serial.print(b); Serial.print(F(" | "));
+        Serial.println(estado);
+      }
+      dataFile.close();
+      Serial.println(F("--------------------------------------------------------"));
+      Serial.println(F("=== Fin del archivo ==="));
+    } else {
+      Serial.println(F("No se pudo abrir el archivo."));
+    }
+  } else {
+    Serial.println(F("No existe archivo en la SD."));
+  }
+}
+
+// ======================
+// Mostrar menú
+// ======================
+void mostrarMenu() {
+  Serial.println(F("\n=== Menú de comandos ==="));
+  Serial.println(F(" - 'ver'      -> ver el contenido del archivo colores.csv"));
+  Serial.println(F(" - 'predecir' -> tomar una muestra nueva y predecir su clase"));
+  Serial.println(F(" - 'cargar'   -> recargar dataset desde la SD"));
+  Serial.println(F(" - 'menu'     -> mostrar este menú"));
+}
+
+// ======================
+// Setup
+// ======================
+void setup() {
+  Serial.begin(9600);
+  if (!tcs.begin()) { Serial.println(F("No se encontró el TCS34725.")); while (1); }
+  if (!SD.begin(SD_CS)) { Serial.println(F("No se pudo inicializar la SD.")); while (1); }
+
+  cargarDataset();
+
+  Serial.println(F("\n=== Sistema de predicción con KNN listo ==="));
+  mostrarMenu();
+}
+
+// ======================
+// Loop
+// ======================
+void loop() {
+  if (Serial.available()) {
+    char cmd[16];
+    int len = Serial.readBytesUntil('\n', cmd, sizeof(cmd)-1);
+    cmd[len] = '\0';
+
+    if (strcasecmp(cmd, "cargar") == 0) {
+      cargarDataset();
+    } else if (strcasecmp(cmd, "predecir") == 0) {
+      uint16_t r, g, b;
+      leerColor(r, g, b);
+      int clase = knnClasificar(r, g, b);
+
+      Serial.print(F("Color medido -> R="));
+      Serial.print(r); Serial.print(F(" G="));
+      Serial.print(g); Serial.print(F(" B="));
+      Serial.println(b);
+
+      if (clase != -1) {
+        String claseNombre;
+        if (clase == 1) claseNombre = "Manzana roja";
+        else if (clase == 2) claseNombre = "Limon verde";
+        else if (clase == 3) claseNombre = "Naranja";
+        else claseNombre = String(clase);
+        Serial.print(F("Clase predicha: "));
+        Serial.println(claseNombre);
+      }
+    } else if (strcasecmp(cmd, "ver") == 0) {
+      verDatosSD();
+    } else if (strcasecmp(cmd, "menu") == 0) {
+      mostrarMenu();
+    }
+  }
+}
