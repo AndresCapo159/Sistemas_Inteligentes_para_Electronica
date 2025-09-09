@@ -1,0 +1,404 @@
+//CODIGO PARA ALMACENAR DATOS EN LA MICRO SD, MOSTRAR TAMAÑO Y GENERAR CENTROS
+
+#include <Wire.h>
+#include "Adafruit_TCS34725.h"
+#include <SPI.h>
+#include <SD.h>
+
+#define SD_CS 10
+#define MUESTRAS 20  
+
+Adafruit_TCS34725 tcs = Adafruit_TCS34725(
+  TCS34725_INTEGRATIONTIME_50MS, TCS34725_GAIN_4X
+);
+
+File dataFile;
+bool datasetExiste = false;
+
+// === Funciones de limpieza ===
+uint16_t getMedian(uint16_t *arr, uint8_t n) {
+  for (uint8_t i = 0; i < n - 1; i++) {
+    for (uint8_t j = i + 1; j < n; j++) {
+      if (arr[j] < arr[i]) {
+        uint16_t tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
+      }
+    }
+  }
+  return arr[n / 2];
+}
+
+float movingAverage(uint16_t *arr, uint8_t n) {
+  long suma = 0;
+  for (uint8_t i = 0; i < n; i++) suma += arr[i];
+  return (float)suma / n;
+}
+
+float emaFilter(uint16_t *arr, uint8_t n, float alpha = 0.3) {
+  float ema = arr[0];
+  for (uint8_t i = 1; i < n; i++) {
+    ema = alpha * arr[i] + (1 - alpha) * ema;
+  }
+  return ema;
+}
+
+float applyIQR(uint16_t *arr, uint8_t n) {
+  getMedian(arr, n);
+  int q1 = arr[n / 4];
+  int q3 = arr[(3 * n) / 4];
+  int iqr = q3 - q1;
+  int lower = q1 - 1.5 * iqr;
+  int upper = q3 + 1.5 * iqr;
+
+  long suma = 0;
+  int count = 0;
+  for (uint8_t i = 0; i < n; i++) {
+    if (arr[i] >= lower && arr[i] <= upper) {
+      suma += arr[i];
+      count++;
+    }
+  }
+  return (count > 0) ? (float)suma / count : arr[n / 2];
+}
+
+void readColorFiltered(float &r, float &g, float &b, uint8_t rep = 7) {
+  uint16_t rr[rep], gg[rep], bb[rep], c;
+  for (uint8_t i = 0; i < rep; i++) {
+    tcs.getRawData(&rr[i], &gg[i], &bb[i], &c);
+    delay(40);
+  }
+  r = applyIQR(rr, rep);
+  g = movingAverage(gg, rep);
+  b = emaFilter(bb, rep, 0.4);
+}
+
+// === Función para borrar SD manualmente ===
+void borrarDatosSD() {
+  if (SD.exists("colores.csv")) {
+    SD.remove("colores.csv");
+    Serial.println(F("Archivo colores.csv borrado."));
+  }
+  if (SD.exists("centro.csv")) {
+    SD.remove("centro.csv");
+    Serial.println(F("Archivo centro.csv borrado."));
+  }
+
+  dataFile = SD.open("colores.csv", FILE_WRITE);
+  if (dataFile) {
+    dataFile.println(F("Clase,Muestra,R,G,B,Estado"));
+    dataFile.close();
+    Serial.println(F("Archivo colores.csv nuevo creado."));
+  }
+  datasetExiste = false;
+}
+
+// === Función para traducir número de clase a nombre ===
+String nombreClase(uint8_t clase) {
+  switch (clase) {
+    case 1: return "Manzana Roja";
+    case 2: return "Limón Verde";
+    case 3: return "Naranja";
+    default: return "Desconocida";
+  }
+}
+
+// === Función para mostrar tamaño de colores.csv ===
+void mostrarTamanoArchivo() {
+  if (SD.exists("colores.csv")) {
+    File f = SD.open("colores.csv");
+    if (f) {
+      unsigned long tamano = f.size();
+      Serial.print(F("Tamaño actual de colores.csv: "));
+      Serial.print(tamano);
+      Serial.print(F(" bytes ("));
+      Serial.print(tamano / 1024.0, 2);
+      Serial.println(F(" KB)"));
+      f.close();
+    } else {
+      Serial.println(F("No se pudo abrir colores.csv para medir tamaño."));
+    }
+  } else {
+    Serial.println(F("No existe colores.csv en la SD."));
+  }
+
+  if (SD.exists("centro.csv")) {
+    File f = SD.open("centro.csv");
+    if (f) {
+      unsigned long tamano = f.size();
+      Serial.print(F("Tamaño actual de centro.csv: "));
+      Serial.print(tamano);
+      Serial.print(F(" bytes ("));
+      Serial.print(tamano / 1024.0, 2);
+      Serial.println(F(" KB)"));
+      f.close();
+    } else {
+      Serial.println(F("No se pudo abrir centro.csv para medir tamaño."));
+    }
+  } else {
+    Serial.println(F("No existe centro.csv en la SD."));
+  }
+}
+
+// === Función para generar centros ===
+void generarCentros() {
+  if (!SD.exists("colores.csv")) {
+    Serial.println(F("No existe dataset para calcular centros."));
+    return;
+  }
+
+  File f = SD.open("colores.csv");
+  if (!f) {
+    Serial.println(F("No se pudo abrir colores.csv"));
+    return;
+  }
+
+  float sumaR[4] = {0, 0, 0, 0};
+  float sumaG[4] = {0, 0, 0, 0};
+  float sumaB[4] = {0, 0, 0, 0};
+  int conteo[4] = {0, 0, 0, 0};
+
+  String linea;
+  bool primera = true;
+  while (f.available()) {
+    linea = f.readStringUntil('\n');
+    linea.trim();
+    if (linea.length() == 0) continue;
+    if (primera && linea.startsWith("Clase")) { primera = false; continue; }
+
+    int idx1 = linea.indexOf(',');
+    int idx2 = linea.indexOf(',', idx1 + 1);
+    int idx3 = linea.indexOf(',', idx2 + 1);
+    int idx4 = linea.indexOf(',', idx3 + 1);
+
+    int clase = linea.substring(0, idx1).toInt();
+    float r = linea.substring(idx2 + 1, idx3).toFloat();
+    float g = linea.substring(idx3 + 1, idx4).toFloat();
+    float b = linea.substring(idx4 + 1).toFloat();
+
+    if (clase >= 1 && clase <= 3) {
+      sumaR[clase] += r;
+      sumaG[clase] += g;
+      sumaB[clase] += b;
+      conteo[clase]++;
+    }
+  }
+  f.close();
+
+  if (SD.exists("centro.csv")) {
+    SD.remove("centro.csv");
+    Serial.println(F("Archivo centro.csv borrado."));
+  }
+
+  File out = SD.open("centro.csv", FILE_WRITE);
+  if (!out) {
+    Serial.println(F("No se pudo crear centro.csv"));
+    return;
+  }
+
+  out.println(F("Clase,Centro_R,Centro_G,Centro_B"));
+
+  for (int c = 1; c <= 3; c++) {
+    if (conteo[c] > 0) {
+      float Rc = sumaR[c] / conteo[c];
+      float Gc = sumaG[c] / conteo[c];
+      float Bc = sumaB[c] / conteo[c];
+
+      out.print(c); out.print(",");
+      out.print(Rc, 2); out.print(",");
+      out.print(Gc, 2); out.print(",");
+      out.println(Bc, 2);
+
+      Serial.print(F("Centro ")); Serial.print(nombreClase(c));
+      Serial.print(F(": R=")); Serial.print(Rc, 2);
+      Serial.print(F(" G=")); Serial.print(Gc, 2);
+      Serial.print(F(" B=")); Serial.println(Bc, 2);
+    }
+  }
+  out.close();
+  Serial.println(F("=== centro.csv generado con éxito ==="));
+}
+
+// === Función para mostrar menú ===
+void mostrarMenu() {
+  Serial.println(F("\n=== Menú de comandos ==="));
+  Serial.println(F(" - 'borrar datos' -> reinicia y borra archivos en la SD"));
+  Serial.println(F(" - 'ok' -> confirma iniciar la toma automática de muestras"));
+  Serial.println(F(" - 'ver datos' -> muestra el contenido de los archivos en la SD"));
+  Serial.println(F(" - 'tamaño' -> muestra el tamaño actual de los archivos en la SD"));
+  Serial.println(F(" - 'centro' -> genera los centros y los guarda en centro.csv"));
+  Serial.println(F(" - 'menu' -> muestra este menú nuevamente"));
+}
+
+// === Función para ver colores.csv y centro.csv ===
+void verDatosSD() {
+  if (SD.exists("colores.csv")) {
+    dataFile = SD.open("colores.csv");
+    if (dataFile) {
+      Serial.println(F("\n=== Contenido de colores.csv ==="));
+      Serial.println(F("Clase | Muestra |    R    |    G    |    B    | Estado"));
+      Serial.println(F("--------------------------------------------------------"));
+
+      String linea;
+      bool primera = true;
+      while (dataFile.available()) {
+        linea = dataFile.readStringUntil('\n');
+        linea.trim();
+        if (linea.length() == 0) continue;
+        if (primera && linea.startsWith("Clase")) { primera = false; continue; }
+
+        int idx1 = linea.indexOf(',');
+        int idx2 = linea.indexOf(',', idx1 + 1);
+        int idx3 = linea.indexOf(',', idx2 + 1);
+        int idx4 = linea.indexOf(',', idx3 + 1);
+        int idx5 = linea.indexOf(',', idx4 + 1);
+
+        uint8_t claseNum = linea.substring(0, idx1).toInt();
+        String claseNombreStr = nombreClase(claseNum);
+        String muestra= linea.substring(idx1 + 1, idx2);
+        String r      = linea.substring(idx2 + 1, idx3);
+        String g      = linea.substring(idx3 + 1, idx4);
+        String b      = linea.substring(idx4 + 1, idx5);
+        String estado = linea.substring(idx5 + 1);
+
+        Serial.print(claseNombreStr); Serial.print(F(" | "));
+        Serial.print(muestra); Serial.print(F("       | "));
+        Serial.print(r); Serial.print(F("  | "));
+        Serial.print(g); Serial.print(F("  | "));
+        Serial.print(b); Serial.print(F("  | "));
+        Serial.println(estado);
+      }
+      dataFile.close();
+      Serial.println(F("--------------------------------------------------------"));
+      Serial.println(F("=== Fin de colores.csv ==="));
+    }
+  } else {
+    Serial.println(F("No existe colores.csv en la SD."));
+  }
+
+  if (SD.exists("centro.csv")) {
+    File f = SD.open("centro.csv");
+    if (f) {
+      Serial.println(F("\n=== Contenido de centro.csv ==="));
+      Serial.println(F("Clase |   Centro R   |   Centro G   |   Centro B"));
+      Serial.println(F("--------------------------------------------------"));
+
+      String linea;
+      bool primera = true;
+      while (f.available()) {
+        linea = f.readStringUntil('\n');
+        linea.trim();
+        if (linea.length() == 0) continue;
+        if (primera && linea.startsWith("Clase")) { primera = false; continue; }
+
+        int idx1 = linea.indexOf(',');
+        int idx2 = linea.indexOf(',', idx1 + 1);
+        int idx3 = linea.indexOf(',', idx2 + 1);
+
+        uint8_t claseNum = linea.substring(0, idx1).toInt();
+        String claseNombreStr = nombreClase(claseNum);
+        String Rc = linea.substring(idx1 + 1, idx2);
+        String Gc = linea.substring(idx2 + 1, idx3);
+        String Bc = linea.substring(idx3 + 1);
+
+        Serial.print(claseNombreStr); Serial.print(F(" | "));
+        Serial.print(Rc); Serial.print(F(" | "));
+        Serial.print(Gc); Serial.print(F(" | "));
+        Serial.println(Bc);
+      }
+      f.close();
+      Serial.println(F("--------------------------------------------------"));
+      Serial.println(F("=== Fin de centro.csv ==="));
+    }
+  } else {
+    Serial.println(F("No existe centro.csv en la SD."));
+  }
+}
+
+void setup() {
+  Serial.begin(9600);
+  if (!tcs.begin()) { Serial.println(F("No se encontró el TCS34725.")); while (1); }
+  if (!SD.begin(SD_CS)) { Serial.println(F("No se pudo inicializar la SD.")); while (1); }
+
+  if (SD.exists("colores.csv")) {
+    datasetExiste = true;
+    Serial.println(F("=== Dataset detectado en la SD ==="));
+    Serial.println(F("No es necesario registrar nuevas muestras."));
+    Serial.println(F("Si desea reiniciar el dataset escriba 'borrar datos'."));
+    Serial.println(F("Si desea ver el dataset escriba 'ver datos'."));
+  } else {
+    Serial.println(F("No existe dataset, puede iniciar registro de muestras."));
+  }
+
+  Serial.println(F("\n=== Sistema listo ==="));
+  mostrarMenu();
+}
+
+void loop() {
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+
+    if (cmd.equalsIgnoreCase("borrar datos")) {
+      borrarDatosSD();
+      Serial.println(F("Archivos reiniciados, escriba 'ok' para registrar nuevas muestras."));
+    }
+    else if (cmd.equalsIgnoreCase("ver datos")) {
+      verDatosSD();
+    }
+    else if (cmd.equalsIgnoreCase("tamaño")) {
+      mostrarTamanoArchivo();
+    }
+    else if (cmd.equalsIgnoreCase("centro")) {
+      generarCentros();
+    }
+    else if (cmd.equalsIgnoreCase("menu")) {
+      mostrarMenu();
+    }
+    else if (cmd.equalsIgnoreCase("ok") && !datasetExiste) {
+      for (uint8_t clase = 1; clase <= 3; clase++) {
+        String nombre = nombreClase(clase);
+        Serial.print(F("\n=== Clase ")); Serial.print(nombre); Serial.println(F(" ==="));
+        Serial.println(F("Escriba 'ok' para comenzar la toma de muestras de esta clase."));
+        bool comenzar = false;
+        while (!comenzar) {
+          if (Serial.available()) {
+            String c = Serial.readStringUntil('\n'); c.trim();
+            if (c.equalsIgnoreCase("ok")) comenzar = true;
+            else if (c.equalsIgnoreCase("borrar datos")) { borrarDatosSD(); return; }
+            else if (c.equalsIgnoreCase("ver datos")) verDatosSD();
+            else if (c.equalsIgnoreCase("tamaño")) mostrarTamanoArchivo();
+            else if (c.equalsIgnoreCase("centro")) generarCentros();
+            else if (c.equalsIgnoreCase("menu")) mostrarMenu();
+          }
+        }
+
+        for (uint8_t i = 0; i < MUESTRAS; i++) {
+          float r, g, b; readColorFiltered(r, g, b);
+          dataFile = SD.open("colores.csv", FILE_WRITE);
+          if (dataFile) {
+            dataFile.print(clase); dataFile.print(",");
+            dataFile.print(i + 1); dataFile.print(",");
+            dataFile.print(r, 2); dataFile.print(",");
+            dataFile.print(g, 2); dataFile.print(",");
+            dataFile.print(b, 2); dataFile.print(",");
+            dataFile.println("Filtrada");
+            dataFile.close();
+          }
+
+          Serial.print(F("Muestra ")); Serial.print(i + 1);
+          Serial.print(F(": R=")); Serial.print(r);
+          Serial.print(F(" G=")); Serial.print(g);
+          Serial.print(F(" B=")); Serial.println(b);
+          delay(200);
+        }
+        Serial.println(F("Clase completada."));
+        mostrarTamanoArchivo();
+      }
+      Serial.println(F("=== Registro de dataset finalizado ==="));
+      datasetExiste = true;
+      mostrarMenu();
+    }
+    else {
+      Serial.println(F("Comando no reconocido. Escriba 'menu' para ver los comandos."));
+    }
+  }
+}

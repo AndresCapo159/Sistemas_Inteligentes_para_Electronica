@@ -1,0 +1,254 @@
+
+//CODIGO PARA PREDECIR NUEVA MUESTRA CON KNN_Centroides y 60 Muestras (con probabilidad y tiempo de ejecución)
+
+#include <Wire.h>
+#include "Adafruit_TCS34725.h"
+#include <SPI.h>
+#include <SD.h>
+
+#define SD_CS 10
+#define K 1   // valor de K = 1 para KNN centroides y valor de K = >1 e impar para KNN Colores
+
+Adafruit_TCS34725 tcs = Adafruit_TCS34725(
+  TCS34725_INTEGRATIONTIME_50MS, TCS34725_GAIN_4X
+);
+
+File dataFile;
+
+// ======================
+// Función nombres de clases
+// ======================
+const char* nombreClase(uint8_t clase) {
+  if (clase == 1) return "Manzana roja";
+  if (clase == 2) return "Limon verde";
+  if (clase == 3) return "Naranja";
+  return "Otro";
+}
+
+// ======================
+// Calcular distancia (sin sqrt)
+// ======================
+uint32_t distanciaEuclidiana(uint16_t r1, uint16_t g1, uint16_t b1,
+                             uint16_t r2, uint16_t g2, uint16_t b2) {
+  long dr = (long)r1 - r2;
+  long dg = (long)g1 - g2;
+  long db = (long)b1 - b2;
+  return dr * dr + dg * dg + db * db;
+}
+
+// ======================
+// KNN usando archivo especificado
+// ======================
+int knnClasificar(const char *archivo, uint16_t r, uint16_t g, uint16_t b, float &probabilidad) {
+  if (!SD.exists(archivo)) {
+    Serial.print(F("No existe archivo ")); Serial.println(archivo);
+    probabilidad = 0;
+    return -1;
+  }
+
+  File f = SD.open(archivo);
+  if (!f) {
+    Serial.print(F("Error al abrir ")); Serial.println(archivo);
+    probabilidad = 0;
+    return -1;
+  }
+
+  uint32_t mejoresDist[K];
+  uint8_t mejoresClases[K];
+  for (int i = 0; i < K; i++) {
+    mejoresDist[i] = 0xFFFFFFFF;
+    mejoresClases[i] = 0xFF;
+  }
+
+  char buffer[64];
+  bool primera = true;
+
+  while (f.available()) {
+    int len = f.readBytesUntil('\n', buffer, sizeof(buffer) - 1);
+    buffer[len] = '\0';
+    if (len == 0) continue;
+
+    // Saltar cabecera
+    if (primera && strncmp(buffer, "Clase", 5) == 0) {
+      primera = false;
+      continue;
+    }
+
+    // Parsear línea
+    char *token = strtok(buffer, ",");
+    if (!token) continue;
+    uint8_t clase = atoi(token);
+
+    // En colores.csv hay 6 columnas, en centro.csv solo 4
+    if (strcmp(archivo, "colores.csv") == 0) {
+      token = strtok(NULL, ","); // Muestra
+      token = strtok(NULL, ","); uint16_t rr = atoi(token);
+      token = strtok(NULL, ","); uint16_t gg = atoi(token);
+      token = strtok(NULL, ","); uint16_t bb = atoi(token);
+
+      uint32_t d = distanciaEuclidiana(r, g, b, rr, gg, bb);
+      for (int j = 0; j < K; j++) {
+        if (d < mejoresDist[j]) {
+          for (int k = K - 1; k > j; k--) {
+            mejoresDist[k] = mejoresDist[k - 1];
+            mejoresClases[k] = mejoresClases[k - 1];
+          }
+          mejoresDist[j] = d;
+          mejoresClases[j] = clase;
+          break;
+        }
+      }
+    } else { // centro.csv
+      token = strtok(NULL, ","); uint16_t rr = atoi(token);
+      token = strtok(NULL, ","); uint16_t gg = atoi(token);
+      token = strtok(NULL, ","); uint16_t bb = atoi(token);
+
+      uint32_t d = distanciaEuclidiana(r, g, b, rr, gg, bb);
+      for (int j = 0; j < K; j++) {
+        if (d < mejoresDist[j]) {
+          for (int k = K - 1; k > j; k--) {
+            mejoresDist[k] = mejoresDist[k - 1];
+            mejoresClases[k] = mejoresClases[k - 1];
+          }
+          mejoresDist[j] = d;
+          mejoresClases[j] = clase;
+          break;
+        }
+      }
+    }
+  }
+  f.close();
+
+  // Contar votos
+  uint8_t votos[10] = {0};
+  for (int i = 0; i < K; i++) {
+    if (mejoresClases[i] != 0xFF) votos[mejoresClases[i]]++;
+  }
+
+  int clasePred = -1, maxVotos = -1;
+  for (int c = 0; c < 10; c++) {
+    if (votos[c] > maxVotos) {
+      maxVotos = votos[c];
+      clasePred = c;
+    }
+  }
+
+  probabilidad = (float)maxVotos / K * 100.0;
+  return clasePred;
+}
+
+// ======================
+// Leer color del sensor
+// ======================
+void leerColor(uint16_t &r, uint16_t &g, uint16_t &b) {
+  uint16_t c;
+  tcs.getRawData(&r, &g, &b, &c);
+}
+
+// ======================
+// Mostrar archivo SD
+// ======================
+void verArchivo(const char *archivo) {
+  if (SD.exists(archivo)) {
+    dataFile = SD.open(archivo);
+    if (dataFile) {
+      Serial.print(F("\n=== Contenido de ")); Serial.print(archivo); Serial.println(F(" ==="));
+      while (dataFile.available()) {
+        String linea = dataFile.readStringUntil('\n');
+        linea.trim();
+        if (linea.length() > 0) Serial.println(linea);
+      }
+      dataFile.close();
+      Serial.println(F("=== Fin del archivo ==="));
+    }
+  } else {
+    Serial.print(F("No existe archivo ")); Serial.println(archivo);
+  }
+}
+
+// ======================
+// Tamaño archivo
+// ======================
+void mostrarTamano(const char *archivo) {
+  if (SD.exists(archivo)) {
+    File f = SD.open(archivo);
+    if (f) {
+      unsigned long tamano = f.size();
+      Serial.print(F("Tamaño de ")); Serial.print(archivo); Serial.print(F(": "));
+      Serial.print(tamano); Serial.print(F(" bytes ("));
+      Serial.print(tamano / 1024.0, 2); Serial.println(F(" KB)"));
+      f.close();
+    }
+  } else {
+    Serial.print(F("No existe archivo ")); Serial.println(archivo);
+  }
+}
+
+// ======================
+// Menú
+// ======================
+void mostrarMenu() {
+  Serial.println(F("\n=== Menú de comandos ==="));
+  Serial.println(F(" - 'ver colores'   -> mostrar colores.csv"));
+  Serial.println(F(" - 'ver centros'   -> mostrar centro.csv"));
+  Serial.println(F(" - 'tamaño colores'-> tamaño de colores.csv"));
+  Serial.println(F(" - 'tamaño centros'-> tamaño de centro.csv"));
+  Serial.println(F(" - 'predecir colores' -> predecir con colores.csv"));
+  Serial.println(F(" - 'predecir centros' -> predecir con centro.csv"));
+  Serial.println(F(" - 'menu'          -> mostrar menú"));
+}
+
+// ======================
+// Setup
+// ======================
+void setup() {
+  Serial.begin(9600);
+  if (!tcs.begin()) { Serial.println(F("No se encontró el TCS34725.")); while (1); }
+  if (!SD.begin(SD_CS)) { Serial.println(F("No se pudo inicializar la SD.")); while (1); }
+
+  Serial.println(F("\n=== Sistema de predicción con KNN listo ==="));
+  mostrarMenu();
+}
+
+// ======================
+// Loop
+// ======================
+void loop() {
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+
+    if (cmd.equalsIgnoreCase("ver colores")) verArchivo("colores.csv");
+    else if (cmd.equalsIgnoreCase("ver centros")) verArchivo("centro.csv");
+
+    else if (cmd.equalsIgnoreCase("tamaño colores")) mostrarTamano("colores.csv");
+    else if (cmd.equalsIgnoreCase("tamaño centros")) mostrarTamano("centro.csv");
+
+    else if (cmd.equalsIgnoreCase("predecir colores")) {
+      uint16_t r, g, b; leerColor(r, g, b);
+      unsigned long inicio = millis();
+      float prob; int clase = knnClasificar("colores.csv", r, g, b, prob);
+      unsigned long tiempo = millis() - inicio;
+      Serial.print(F("Color medido -> R=")); Serial.print(r); Serial.print(F(" G=")); Serial.print(g); Serial.print(F(" B=")); Serial.println(b);
+      if (clase != -1) {
+        Serial.print(F("Clase predicha: ")); Serial.println(nombreClase(clase));
+        Serial.print(F("Probabilidad: ")); Serial.print(prob, 2); Serial.println(F("%"));
+        Serial.print(F("Tiempo: ")); Serial.print(tiempo); Serial.println(F(" ms"));
+      }
+    }
+    else if (cmd.equalsIgnoreCase("predecir centros")) {
+      uint16_t r, g, b; leerColor(r, g, b);
+      unsigned long inicio = millis();
+      float prob; int clase = knnClasificar("centro.csv", r, g, b, prob);
+      unsigned long tiempo = millis() - inicio;
+      Serial.print(F("Color medido -> R=")); Serial.print(r); Serial.print(F(" G=")); Serial.print(g); Serial.print(F(" B=")); Serial.println(b);
+      if (clase != -1) {
+        Serial.print(F("Clase predicha: ")); Serial.println(nombreClase(clase));
+        Serial.print(F("Probabilidad: ")); Serial.print(prob, 2); Serial.println(F("%"));
+        Serial.print(F("Tiempo: ")); Serial.print(tiempo); Serial.println(F(" ms"));
+      }
+    }
+    else if (cmd.equalsIgnoreCase("menu")) mostrarMenu();
+    else Serial.println(F("Comando no reconocido. Escriba 'menu'."));
+  }
+}
