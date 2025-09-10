@@ -1,5 +1,6 @@
 
-//CODIGO PARA PREDECIR NUEVA MUESTRA CON KNN_Centroides y 60 Muestras (con probabilidad y tiempo de ejecución)
+// CODIGO PARA PREDECIR NUEVA MUESTRA CON KNN_Centroides y 60 Muestras
+// (con probabilidad y tiempo de ejecución)
 
 #include <Wire.h>
 #include "Adafruit_TCS34725.h"
@@ -7,7 +8,7 @@
 #include <SD.h>
 
 #define SD_CS 10
-#define K 1   // valor de K = 1 para KNN centroides y valor de K = >1 e impar para KNN Colores
+#define K 1   // valor de K = 1 para KNN centroides, >1 e impar para KNN Colores
 
 Adafruit_TCS34725 tcs = Adafruit_TCS34725(
   TCS34725_INTEGRATIONTIME_50MS, TCS34725_GAIN_4X
@@ -23,6 +24,16 @@ const char* nombreClase(uint8_t clase) {
   if (clase == 2) return "Limon verde";
   if (clase == 3) return "Naranja";
   return "Otro";
+}
+
+// ======================
+// Función auxiliar para imprimir columnas alineadas
+// ======================
+void printCol(String texto, int ancho) {
+  Serial.print(texto);
+  int espacios = ancho - texto.length();
+  for (int i = 0; i < espacios; i++) Serial.print(" ");
+  Serial.print(" | ");
 }
 
 // ======================
@@ -146,19 +157,69 @@ void leerColor(uint16_t &r, uint16_t &g, uint16_t &b) {
 }
 
 // ======================
-// Mostrar archivo SD
+// Mostrar archivo SD (alineado en columnas)
 // ======================
 void verArchivo(const char *archivo) {
   if (SD.exists(archivo)) {
     dataFile = SD.open(archivo);
     if (dataFile) {
       Serial.print(F("\n=== Contenido de ")); Serial.print(archivo); Serial.println(F(" ==="));
+
+      if (strcmp(archivo, "colores.csv") == 0) {
+        Serial.println(F("Clase          | Muestra |    R    |    G    |    B    "));
+        Serial.println(F("------------------------------------------------------          "));
+      } else {
+        Serial.println(F("Clase          |  Centro R  |  Centro G  |  Centro B "));
+        Serial.println(F("----------------------------------------------------"));
+      }
+
+      String linea;
+      bool primera = true;
       while (dataFile.available()) {
-        String linea = dataFile.readStringUntil('\n');
+        linea = dataFile.readStringUntil('\n');
         linea.trim();
-        if (linea.length() > 0) Serial.println(linea);
+        if (linea.length() == 0) continue;
+        if (primera && linea.startsWith("Clase")) { primera = false; continue; }
+
+        if (strcmp(archivo, "colores.csv") == 0) {
+          // Clase,Muestra,R,G,B
+          int idx1 = linea.indexOf(',');
+          int idx2 = linea.indexOf(',', idx1 + 1);
+          int idx3 = linea.indexOf(',', idx2 + 1);
+          int idx4 = linea.indexOf(',', idx3 + 1);
+
+          uint8_t claseNum = linea.substring(0, idx1).toInt();
+          String claseNombreStr = nombreClase(claseNum);
+          String muestra = linea.substring(idx1 + 1, idx2);
+          String r      = linea.substring(idx2 + 1, idx3);
+          String g      = linea.substring(idx3 + 1, idx4);
+          String b      = linea.substring(idx4 + 1);
+
+          printCol(claseNombreStr, 14);
+          printCol(muestra, 7);
+          printCol(r, 7);
+          printCol(g, 7);
+          Serial.println(b);
+        } else {
+          // Clase,R,G,B
+          int idx1 = linea.indexOf(',');
+          int idx2 = linea.indexOf(',', idx1 + 1);
+          int idx3 = linea.indexOf(',', idx2 + 1);
+
+          uint8_t claseNum = linea.substring(0, idx1).toInt();
+          String claseNombreStr = nombreClase(claseNum);
+          String Rc = linea.substring(idx1 + 1, idx2);
+          String Gc = linea.substring(idx2 + 1, idx3);
+          String Bc = linea.substring(idx3 + 1);
+
+          printCol(claseNombreStr, 14);
+          printCol(Rc, 10);
+          printCol(Gc, 10);
+          Serial.println(Bc);
+        }
       }
       dataFile.close();
+      Serial.println(F("------------------------------------------------------"));
       Serial.println(F("=== Fin del archivo ==="));
     }
   } else {
