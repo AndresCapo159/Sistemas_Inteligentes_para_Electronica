@@ -228,14 +228,22 @@ void mostrarMenu() {
   Serial.println(F(" - 'menu' -> muestra este menú nuevamente"));
 }
 
+// === Función auxiliar para imprimir con alineación ===
+void printCol(String texto, int ancho) {
+  Serial.print(texto);
+  int espacios = ancho - texto.length();
+  for (int i = 0; i < espacios; i++) Serial.print(" ");
+  Serial.print(" | ");
+}
+
 // === Función para ver colores.csv y centro.csv ===
 void verDatosSD() {
   if (SD.exists("colores.csv")) {
     dataFile = SD.open("colores.csv");
     if (dataFile) {
       Serial.println(F("\n=== Contenido de colores.csv ==="));
-      Serial.println(F("Clase | Muestra |    R    |    G    |    B    | Estado"));
-      Serial.println(F("--------------------------------------------------------"));
+      Serial.println(F("Clase          | Muestra |     R     |     G     |     B     | Estado"));
+      Serial.println(F("----------------------------------------------------------------------"));
 
       String linea;
       bool primera = true;
@@ -253,21 +261,21 @@ void verDatosSD() {
 
         uint8_t claseNum = linea.substring(0, idx1).toInt();
         String claseNombreStr = nombreClase(claseNum);
-        String muestra= linea.substring(idx1 + 1, idx2);
+        String muestra = linea.substring(idx1 + 1, idx2);
         String r      = linea.substring(idx2 + 1, idx3);
         String g      = linea.substring(idx3 + 1, idx4);
         String b      = linea.substring(idx4 + 1, idx5);
         String estado = linea.substring(idx5 + 1);
 
-        Serial.print(claseNombreStr); Serial.print(F(" | "));
-        Serial.print(muestra); Serial.print(F("       | "));
-        Serial.print(r); Serial.print(F("  | "));
-        Serial.print(g); Serial.print(F("  | "));
-        Serial.print(b); Serial.print(F("  | "));
+        printCol(claseNombreStr, 14);
+        printCol(muestra, 7);
+        printCol(r, 8);
+        printCol(g, 8);
+        printCol(b, 8);
         Serial.println(estado);
       }
       dataFile.close();
-      Serial.println(F("--------------------------------------------------------"));
+      Serial.println(F("----------------------------------------------------------------------"));
       Serial.println(F("=== Fin de colores.csv ==="));
     }
   } else {
@@ -278,8 +286,8 @@ void verDatosSD() {
     File f = SD.open("centro.csv");
     if (f) {
       Serial.println(F("\n=== Contenido de centro.csv ==="));
-      Serial.println(F("Clase |   Centro R   |   Centro G   |   Centro B"));
-      Serial.println(F("--------------------------------------------------"));
+      Serial.println(F("Clase          |  Centro R  |  Centro G  |  Centro B"));
+      Serial.println(F("----------------------------------------------------"));
 
       String linea;
       bool primera = true;
@@ -299,13 +307,13 @@ void verDatosSD() {
         String Gc = linea.substring(idx2 + 1, idx3);
         String Bc = linea.substring(idx3 + 1);
 
-        Serial.print(claseNombreStr); Serial.print(F(" | "));
-        Serial.print(Rc); Serial.print(F(" | "));
-        Serial.print(Gc); Serial.print(F(" | "));
+        printCol(claseNombreStr, 14);
+        printCol(Rc, 10);
+        printCol(Gc, 10);
         Serial.println(Bc);
       }
       f.close();
-      Serial.println(F("--------------------------------------------------"));
+      Serial.println(F("----------------------------------------------------"));
       Serial.println(F("=== Fin de centro.csv ==="));
     }
   } else {
