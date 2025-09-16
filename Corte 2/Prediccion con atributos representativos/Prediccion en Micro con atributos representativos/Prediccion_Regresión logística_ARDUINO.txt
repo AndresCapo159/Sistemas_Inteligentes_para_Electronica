@@ -1,0 +1,122 @@
+//DATASET: https://www.kaggle.com/datasets/arnavs19/wine-quality-uci-machine-learning-repository?resource=download
+
+//CÓDIGO PARA PREDECIR NUEVA MUESTRA CON ATRIBUTOS REPRESENTATIVOS.
+//Recordar ajustar el archivo "wine_model.h" con los parámetros obtenidos en el entrenamiento.
+
+
+//CÓDIGO DE ARDUINO UNO.
+
+#include "wine_model.h"   // Archivo con los parámetros del modelo:
+                          //   - wine_mean[]: medias de cada atributo
+                          //   - wine_scale[]: desviaciones estándar
+                          //   - wine_weights[][]: pesos por clase
+                          //   - wine_bias[]: interceptos por clase
+                          //   - wine_classes[]: etiquetas de calidad (3–9)
+
+// === Listas descriptivas para guiar al usuario ===
+
+// Nombres de los 11 atributos químicos que se ingresarán.
+const char* feature_names[NUM_FEATURES] = {
+  "fixed_acidity", "volatile_acidity", "citric_acid", "residual_sugar",
+  "chlorides", "free_SO2", "total_SO2", "density",
+  "pH", "sulphates", "alcohol"
+};
+
+// Valores mínimos de referencia para cada atributo (del dataset original).
+const float feature_min[NUM_FEATURES] = {
+  3.8,   0.08, 0.0,  0.6,  0.009,  1.0,   6.0,   0.987, 2.72, 0.22,  8.0
+};
+
+// Valores máximos de referencia para cada atributo.
+const float feature_max[NUM_FEATURES] = {
+ 15.9,   1.58, 1.66, 65.8, 0.611, 289.0, 440.0, 1.039, 4.01, 2.00, 14.9
+};
+
+// --------------------------------------------------------------------
+// CONFIGURACIÓN INICIAL
+// --------------------------------------------------------------------
+void setup() {
+  Serial.begin(9600);          // Inicia la comunicación serie a 9600 baudios.
+  while (!Serial);             // Espera a que el monitor serie esté listo.
+  Serial.println(F("\n=== Predicción de calidad de vino (3–9) ==="));
+  Serial.println(F("Ingrese cada atributo cuando se le pida,"));
+  Serial.println(F("usando el rango sugerido como referencia.\n"));
+}
+
+// --------------------------------------------------------------------
+// BUCLE PRINCIPAL
+// --------------------------------------------------------------------
+void loop() {
+  float x[NUM_FEATURES];       // Arreglo para guardar los 11 valores ingresados.
+
+  // --- 1. Captura de datos desde el Monitor Serie ---
+  for (byte i = 0; i < NUM_FEATURES; i++) {
+    // Pide al usuario un atributo específico y muestra su rango recomendado.
+    Serial.print(F("\nIngrese "));
+    Serial.print(feature_names[i]);
+    Serial.print(F(" (rango sugerido "));
+    Serial.print(feature_min[i]);
+    Serial.print(F(" – "));
+    Serial.print(feature_max[i]);
+    Serial.print(F("): "));
+
+    // Espera hasta que el usuario escriba algo y presione Enter.
+    while (Serial.available() == 0);
+
+    // Lee el valor como número de punto flotante.
+    x[i] = Serial.parseFloat();
+
+    // Limpia el buffer para evitar que el salto de línea afecte la siguiente lectura.
+    Serial.read();
+
+    // Confirma el valor recibido mostrando 4 decimales.
+    Serial.print(F("  -> valor recibido: "));
+    Serial.println(x[i], 4);
+  }
+
+  // --- 2. Normalización de los datos ---
+  // Se aplican las medias y escalas del modelo entrenado en Python
+  // para que las características tengan la misma distribución que en el entrenamiento.
+  for (byte i = 0; i < NUM_FEATURES; i++) {
+    x[i] = (x[i] - wine_mean[i]) / wine_scale[i];
+  }
+
+  // --- 3. Cálculo de logits (salidas lineales de cada clase) ---
+  float z[NUM_CLASSES];  // Guardará el resultado para cada clase de calidad.
+  for (byte k = 0; k < NUM_CLASSES; k++) {
+    float s = wine_bias[k];  // Se inicia con el sesgo (intercepto) de la clase.
+    for (byte i = 0; i < NUM_FEATURES; i++) {
+      // Suma del producto peso*valor normalizado para cada atributo.
+      s += wine_weights[k][i] * x[i];
+    }
+    z[k] = s;  // Logit final para la clase k.
+  }
+
+  // --- 4. Softmax para convertir logits en probabilidades ---
+  //   exp(z_k) / sum(exp(z_t)) para cada clase k.
+  float sumExp = 0;
+  for (byte k = 0; k < NUM_CLASSES; k++) sumExp += exp(z[k]);
+
+  float maxP = 0;    // Probabilidad máxima encontrada.
+  int best = 0;      // Índice de la clase con mayor probabilidad.
+
+  for (byte k = 0; k < NUM_CLASSES; k++) {
+    float p = exp(z[k]) / sumExp;  // Probabilidad de la clase k.
+    if (p > maxP) {                // Si es la mayor, la guardamos.
+      maxP = p;
+      best = k;
+    }
+  }
+
+  // --- 5. Mostrar el resultado al usuario ---
+  Serial.println(F("\n===== RESULTADO ====="));
+  Serial.print(F("Clase predicha (calidad): "));
+  Serial.print(wine_classes[best]);          // Calidad de vino (ej. 5, 6, 7…)
+  Serial.print(F("  con probabilidad: "));
+  Serial.print(maxP * 100, 1);               // Probabilidad en porcentaje.
+  Serial.println(F("%)\n"));
+
+  // --- 6. Esperar antes de la siguiente predicción ---
+  Serial.println(F("Puede volver a ingresar otra muestra cuando desee.\n"));
+  delay(1000);  // Pequeña pausa para que el usuario lea el resultado.
+}
